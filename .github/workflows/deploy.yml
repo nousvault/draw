@@ -1,0 +1,10 @@
+name: deploy
+on:
+  push:
+    branches: [main]
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Deployment handled by Cloudflare Pages
+        run: echo "Cloudflare Pages deploys automatically via GitHub integration. No action needed here."
