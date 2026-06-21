@@ -247,6 +247,9 @@ const ExcalidrawWrapper = () => {
   const [activeBoardId, setActiveBoardId] = useState<string | null>(null);
   const activeBoardRef = useRef<Board | null>(null);
 
+  // Remember last active sidebar tab so close→reopen restores it
+  const lastSidebarTabRef = useRef<string>("boards");
+
   const initialStatePromiseRef = useRef<{
     promise: ResolvablePromise<ExcalidrawInitialDataState | null>;
   }>({ promise: null! });
@@ -420,6 +423,23 @@ const ExcalidrawWrapper = () => {
     appState: AppState,
     files: BinaryFiles,
   ) => {
+    // Track last active sidebar tab, and restore it when sidebar reopens
+    // (Excalidraw defaults to "library" tab when no tab is specified on open)
+    if (appState.openSidebar?.name === "default") {
+      const tab = appState.openSidebar.tab;
+      if (tab && tab !== lastSidebarTabRef.current) {
+        lastSidebarTabRef.current = tab;
+      } else if (!tab) {
+        // Sidebar opened without a tab — restore last known tab
+        excalidrawAPI?.updateScene({
+          appState: {
+            openSidebar: { name: "default", tab: lastSidebarTabRef.current },
+          },
+          captureUpdate: CaptureUpdateAction.NEVER,
+        });
+      }
+    }
+
     // Always keep LocalData in sync (for tab sync / fallback)
     if (!LocalData.isSavePaused()) {
       LocalData.save(elements, appState, files, () => {
