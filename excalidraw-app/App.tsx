@@ -33,12 +33,9 @@ import { t } from "@excalidraw/excalidraw/i18n";
 import {
   GithubIcon,
   XBrandIcon,
-  DiscordIcon,
-  youtubeIcon,
 } from "@excalidraw/excalidraw/components/icons";
 import { isElementLink } from "@excalidraw/element";
 import {
-  bumpElementVersions,
   restoreAppState,
   restoreElements,
 } from "@excalidraw/excalidraw/data/restore";
@@ -69,7 +66,6 @@ import type { ResolvablePromise } from "@excalidraw/common/utils";
 import CustomStats from "./CustomStats";
 import {
   Provider,
-  useAtom,
   useAtomValue,
   appJotaiStore,
 } from "./app-jotai";
@@ -80,6 +76,7 @@ import {
 import { AppFooter } from "./components/AppFooter";
 import { AppMainMenu } from "./components/AppMainMenu";
 import { AppWelcomeScreen } from "./components/AppWelcomeScreen";
+import { AppSidebar } from "./components/AppSidebar";
 import { TopErrorBoundary } from "./components/TopErrorBoundary";
 
 import { updateStaleImageStatuses } from "./data/FileManager";
@@ -104,7 +101,7 @@ import DebugCanvas, {
   isVisualDebuggerEnabled,
   loadSavedDebugState,
 } from "./components/DebugCanvas";
-import { AppSidebar } from "./components/AppSidebar";
+import { BoardStorage, type Board } from "./data/BoardStorage";
 
 import "./index.scss";
 
@@ -153,17 +150,31 @@ if (window.self !== window.top) {
 
 const initializeScene = async (opts: {
   excalidrawAPI: ExcalidrawImperativeAPI;
-}): Promise<
-  { scene: ExcalidrawInitialDataState | null } & (
-    | { isExternalScene: true; id: string; key: string }
-    | { isExternalScene: false; id?: null; key?: null }
-  )
-> => {
+  board: Board | null;
+}): Promise<{ scene: ExcalidrawInitialDataState | null }> => {
   const externalUrlMatch = window.location.hash.match(/^#url=(.*)$/);
+
+  // If loading from a board, use its stored data
+  if (opts.board) {
+    try {
+      const elements = restoreElements(
+        JSON.parse(opts.board.elements || "[]"),
+        null,
+        { repairBindings: true, deleteInvisibleElements: true },
+      );
+      const appState = restoreAppState(
+        JSON.parse(opts.board.appState || "{}"),
+        null,
+      );
+      return { scene: { elements, appState } };
+    } catch {
+      return { scene: null };
+    }
+  }
 
   const localDataState = importFromLocalStorage();
 
-  let scene: Omit<RestoredDataState, "files"> & {
+  const scene: Omit<RestoredDataState, "files"> & {
     scrollToContent?: boolean;
   } = {
     elements: restoreElements(localDataState?.elements, null, {
@@ -179,32 +190,63 @@ const initializeScene = async (opts: {
     try {
       const request = await fetch(window.decodeURIComponent(url));
       const data = await loadFromBlob(await request.blob(), null, null);
-      return { scene: data, isExternalScene: false };
+      return { scene: data };
     } catch (error: any) {
       return {
         scene: {
-          appState: {
-            errorMessage: t("alerts.invalidSceneUrl"),
-          },
+          appState: { errorMessage: t("alerts.invalidSceneUrl") },
         },
-        isExternalScene: false,
       };
     }
   }
 
-  return { scene, isExternalScene: false };
+  return { scene };
 };
+
+// Debounced board save — 1s after last change
+const debouncedSaveBoard = debounce(
+  async (
+    board: Board,
+    elements: readonly OrderedExcalidrawElement[],
+    appState: AppState,
+    files: BinaryFiles,
+  ) => {
+    try {
+      await BoardStorage.save({
+        ...board,
+        elements: JSON.stringify(elements),
+        appState: JSON.stringify({
+          zoom: appState.zoom,
+          scrollX: appState.scrollX,
+          scrollY: appState.scrollY,
+          theme: appState.theme,
+          viewBackgroundColor: appState.viewBackgroundColor,
+        }),
+        files: JSON.stringify(
+          Object.fromEntries(
+            Object.entries(files).map(([k, v]) => [k, v]),
+          ),
+        ),
+        updatedAt: Date.now(),
+      });
+    } catch (e) {
+      console.warn("Board save failed", e);
+    }
+  },
+  1000,
+);
 
 const ExcalidrawWrapper = () => {
   const excalidrawAPI = useExcalidrawAPI();
 
   const [errorMessage, setErrorMessage] = useState("");
-
   const { editorTheme, appTheme, setAppTheme } = useHandleAppTheme();
-
   const [langCode, setLangCode] = useAppLangCode();
-
   const editorInterface = useEditorInterface();
+
+  // Board state
+  const [activeBoardId, setActiveBoardId] = useState<string | null>(null);
+  const activeBoardRef = useRef<Board | null>(null);
 
   const initialStatePromiseRef = useRef<{
     promise: ResolvablePromise<ExcalidrawInitialDataState | null>;
@@ -215,10 +257,6 @@ const ExcalidrawWrapper = () => {
   }
 
   const debugCanvasRef = useRef<HTMLCanvasElement>(null);
-
-  useEffect(() => {
-    // version tracking only, no collab
-  }, []);
 
   useHandleLibrary({
     excalidrawAPI,
@@ -240,118 +278,77 @@ const ExcalidrawWrapper = () => {
     }
   }, [excalidrawAPI]);
 
-  const loadImages = useCallback(
-    (
-      data: Awaited<ReturnType<typeof initializeScene>>,
-      isInitialLoad = false,
-    ) => {
-      if (!data.scene || !excalidrawAPI) {
-        return;
-      }
-
-      if (isInitialLoad) {
-        const fileIds =
-          data.scene.elements?.reduce((acc, element) => {
-            if (isInitializedImageElement(element)) {
-              return acc.concat(element.fileId);
-            }
-            return acc;
-          }, [] as FileId[]) || [];
-
-        if (fileIds.length) {
-          LocalData.fileStorage
-            .getFiles(fileIds)
-            .then(async ({ loadedFiles, erroredFiles }) => {
-              if (loadedFiles.length) {
-                excalidrawAPI.addFiles(loadedFiles);
-              }
-              updateStaleImageStatuses({
-                excalidrawAPI,
-                erroredFiles,
-                elements: excalidrawAPI.getSceneElementsIncludingDeleted(),
-              });
-            });
-        }
-        LocalData.fileStorage.clearObsoleteFiles({
-          currentFileIds: fileIds,
-        });
-      }
-    },
-    [excalidrawAPI],
-  );
-
+  // ── Board initialization ────────────────────────────────────────────────────
   useEffect(() => {
-    if (!excalidrawAPI) {
-      return;
-    }
+    if (!excalidrawAPI) return;
 
-    initializeScene({ excalidrawAPI }).then(async (data) => {
-      loadImages(data, true);
-      initialStatePromiseRef.current.promise.resolve(data.scene);
-    });
+    (async () => {
+      let boards = await BoardStorage.getAll();
+      let activeId = BoardStorage.getActiveId();
+      let activeBoard: Board | null = null;
 
-    const onHashChange = async (event: HashChangeEvent) => {
-      event.preventDefault();
-      const libraryUrlTokens = parseLibraryTokensFromUrl();
-      if (!libraryUrlTokens) {
-        excalidrawAPI.updateScene({ appState: { isLoading: true } });
-        initializeScene({ excalidrawAPI }).then((data) => {
-          loadImages(data);
-          if (data.scene) {
-            excalidrawAPI.updateScene({
-              elements: restoreElements(data.scene.elements, null, {
-                repairBindings: true,
-              }),
-              appState: restoreAppState(data.scene.appState, null),
-              captureUpdate: CaptureUpdateAction.IMMEDIATELY,
-            });
-          }
-        });
+      if (boards.length === 0) {
+        // First ever load — migrate localStorage into a board
+        const migrated = await BoardStorage.migrateFromLocalStorage();
+        if (migrated) {
+          boards = [migrated];
+          activeId = migrated.id;
+          BoardStorage.setActiveId(migrated.id);
+        }
       }
-    };
+
+      activeBoard = boards.find((b) => b.id === activeId) ?? boards[0] ?? null;
+
+      if (activeBoard) {
+        BoardStorage.setActiveId(activeBoard.id);
+        activeBoardRef.current = activeBoard;
+        setActiveBoardId(activeBoard.id);
+      }
+
+      const { scene } = await initializeScene({
+        excalidrawAPI,
+        board: activeBoard,
+      });
+      initialStatePromiseRef.current.promise.resolve(scene);
+
+      // load files for active board
+      if (activeBoard) {
+        try {
+          const files = JSON.parse(activeBoard.files || "{}");
+          if (Object.keys(files).length) {
+            excalidrawAPI.addFiles(Object.values(files));
+          }
+        } catch {}
+      }
+    })();
+  }, [excalidrawAPI]);
+
+  // ── Tab sync (multi-tab localStorage) ──────────────────────────────────────
+  useEffect(() => {
+    if (!excalidrawAPI) return;
 
     const syncData = debounce(() => {
-      if (isTestEnv()) {
-        return;
-      }
-      if (!document.hidden) {
-        if (isBrowserStorageStateNewer(STORAGE_KEYS.VERSION_DATA_STATE)) {
-          const localDataState = importFromLocalStorage();
-          const username = importUsernameFromLocalStorage();
-          setLangCode(getPreferredLanguage());
-          excalidrawAPI.updateScene({
-            ...localDataState,
-            captureUpdate: CaptureUpdateAction.NEVER,
-          });
-          LibraryIndexedDBAdapter.load().then((data) => {
-            if (data) {
-              excalidrawAPI.updateLibrary({
-                libraryItems: data.libraryItems,
-              });
-            }
-          });
-        }
-
-        if (isBrowserStorageStateNewer(STORAGE_KEYS.VERSION_FILES)) {
-          const elements = excalidrawAPI.getSceneElementsIncludingDeleted();
-          const currFiles = excalidrawAPI.getFiles();
-          const fileIds =
-            elements?.reduce((acc, element) => {
-              if (
-                isInitializedImageElement(element) &&
-                !currFiles[element.fileId]
-              ) {
+      if (isTestEnv() || document.hidden) return;
+      if (isBrowserStorageStateNewer(STORAGE_KEYS.VERSION_DATA_STATE)) {
+        setLangCode(getPreferredLanguage());
+        const fileIds =
+          excalidrawAPI
+            .getSceneElementsIncludingDeleted()
+            .reduce((acc, element) => {
+              if (isInitializedImageElement(element)) {
                 return acc.concat(element.fileId);
               }
               return acc;
             }, [] as FileId[]) || [];
-          if (fileIds.length) {
+
+        if (isBrowserStorageStateNewer(STORAGE_KEYS.VERSION_FILES)) {
+          const currFiles = excalidrawAPI.getFiles();
+          const missing = fileIds.filter((id) => !currFiles[id]);
+          if (missing.length) {
             LocalData.fileStorage
-              .getFiles(fileIds)
+              .getFiles(missing)
               .then(({ loadedFiles, erroredFiles }) => {
-                if (loadedFiles.length) {
-                  excalidrawAPI.addFiles(loadedFiles);
-                }
+                if (loadedFiles.length) excalidrawAPI.addFiles(loadedFiles);
                 updateStaleImageStatuses({
                   excalidrawAPI,
                   erroredFiles,
@@ -363,19 +360,28 @@ const ExcalidrawWrapper = () => {
       }
     }, SYNC_BROWSER_TABS_TIMEOUT);
 
-    const onUnload = () => {
-      LocalData.flushSave();
+    const onUnload = () => LocalData.flushSave();
+    const visibilityChange = (event: FocusEvent | Event) => {
+      if (event.type === EVENT.BLUR || document.hidden) LocalData.flushSave();
+      if (event.type === EVENT.VISIBILITY_CHANGE || event.type === EVENT.FOCUS) syncData();
     };
 
-    const visibilityChange = (event: FocusEvent | Event) => {
-      if (event.type === EVENT.BLUR || document.hidden) {
-        LocalData.flushSave();
-      }
-      if (
-        event.type === EVENT.VISIBILITY_CHANGE ||
-        event.type === EVENT.FOCUS
-      ) {
-        syncData();
+    const onHashChange = async (event: HashChangeEvent) => {
+      event.preventDefault();
+      const libraryUrlTokens = parseLibraryTokensFromUrl();
+      if (!libraryUrlTokens) {
+        excalidrawAPI.updateScene({ appState: { isLoading: true } });
+        const { scene } = await initializeScene({
+          excalidrawAPI,
+          board: activeBoardRef.current,
+        });
+        if (scene) {
+          excalidrawAPI.updateScene({
+            elements: restoreElements(scene.elements, null, { repairBindings: true }),
+            appState: restoreAppState(scene.appState, null),
+            captureUpdate: CaptureUpdateAction.IMMEDIATELY,
+          });
+        }
       }
     };
 
@@ -389,22 +395,16 @@ const ExcalidrawWrapper = () => {
       window.removeEventListener(EVENT.UNLOAD, onUnload, false);
       window.removeEventListener(EVENT.BLUR, visibilityChange, false);
       window.removeEventListener(EVENT.FOCUS, visibilityChange, false);
-      document.removeEventListener(
-        EVENT.VISIBILITY_CHANGE,
-        visibilityChange,
-        false,
-      );
+      document.removeEventListener(EVENT.VISIBILITY_CHANGE, visibilityChange, false);
     };
-  }, [excalidrawAPI, setLangCode, loadImages]);
+  }, [excalidrawAPI, setLangCode]);
 
   useEffect(() => {
     const unloadHandler = (event: BeforeUnloadEvent) => {
       LocalData.flushSave();
       if (
         excalidrawAPI &&
-        LocalData.fileStorage.shouldPreventUnload(
-          excalidrawAPI.getSceneElements(),
-        )
+        LocalData.fileStorage.shouldPreventUnload(excalidrawAPI.getSceneElements())
       ) {
         if (import.meta.env.VITE_APP_DISABLE_PREVENT_UNLOAD !== "true") {
           preventUnload(event);
@@ -412,38 +412,33 @@ const ExcalidrawWrapper = () => {
       }
     };
     window.addEventListener(EVENT.BEFORE_UNLOAD, unloadHandler);
-    return () => {
-      window.removeEventListener(EVENT.BEFORE_UNLOAD, unloadHandler);
-    };
+    return () => window.removeEventListener(EVENT.BEFORE_UNLOAD, unloadHandler);
   }, [excalidrawAPI]);
 
+  // ── onChange: save to LocalData + board ────────────────────────────────────
   const onChange = (
     elements: readonly OrderedExcalidrawElement[],
     appState: AppState,
     files: BinaryFiles,
   ) => {
+    // Always keep LocalData in sync (for tab sync / fallback)
     if (!LocalData.isSavePaused()) {
       LocalData.save(elements, appState, files, () => {
         if (excalidrawAPI) {
           let didChange = false;
-          const elements = excalidrawAPI
+          const updated = excalidrawAPI
             .getSceneElementsIncludingDeleted()
             .map((element) => {
-              if (
-                LocalData.fileStorage.shouldUpdateImageElementStatus(element)
-              ) {
+              if (LocalData.fileStorage.shouldUpdateImageElementStatus(element)) {
                 const newElement = newElementWith(element, { status: "saved" });
-                if (newElement !== element) {
-                  didChange = true;
-                }
+                if (newElement !== element) didChange = true;
                 return newElement;
               }
               return element;
             });
-
           if (didChange) {
             excalidrawAPI.updateScene({
-              elements,
+              elements: updated,
               captureUpdate: CaptureUpdateAction.NEVER,
             });
           }
@@ -451,64 +446,103 @@ const ExcalidrawWrapper = () => {
       });
     }
 
+    // Save to active board in IndexedDB
+    if (activeBoardRef.current) {
+      debouncedSaveBoard(activeBoardRef.current, elements, appState, files);
+    }
+
     if (debugCanvasRef.current && excalidrawAPI) {
-      debugRenderer(
-        debugCanvasRef.current,
-        appState,
-        elements,
-        window.devicePixelRatio,
-      );
+      debugRenderer(debugCanvasRef.current, appState, elements, window.devicePixelRatio);
     }
   };
 
+  // ── Board switch ────────────────────────────────────────────────────────────
+  const handleSaveBeforeSwitch = useCallback(async () => {
+    if (!excalidrawAPI || !activeBoardRef.current) return;
+    const elements = excalidrawAPI.getSceneElements();
+    const appState = excalidrawAPI.getAppState();
+    const files = excalidrawAPI.getFiles();
+    await BoardStorage.save({
+      ...activeBoardRef.current,
+      elements: JSON.stringify(elements),
+      appState: JSON.stringify({
+        zoom: appState.zoom,
+        scrollX: appState.scrollX,
+        scrollY: appState.scrollY,
+        theme: appState.theme,
+        viewBackgroundColor: appState.viewBackgroundColor,
+      }),
+      files: JSON.stringify(files),
+      updatedAt: Date.now(),
+    });
+  }, [excalidrawAPI]);
+
+  const handleBoardSwitch = useCallback(
+    async (board: Board) => {
+      if (!excalidrawAPI) return;
+      activeBoardRef.current = board;
+      setActiveBoardId(board.id);
+      BoardStorage.setActiveId(board.id);
+
+      try {
+        const elements = restoreElements(
+          JSON.parse(board.elements || "[]"),
+          null,
+          { repairBindings: true, deleteInvisibleElements: true },
+        );
+        const appState = restoreAppState(
+          JSON.parse(board.appState || "{}"),
+          null,
+        );
+        excalidrawAPI.updateScene({
+          elements,
+          appState: { ...appState, isLoading: false },
+          captureUpdate: CaptureUpdateAction.IMMEDIATELY,
+        });
+
+        // load files
+        try {
+          const files = JSON.parse(board.files || "{}");
+          if (Object.keys(files).length) {
+            excalidrawAPI.addFiles(Object.values(files));
+          }
+        } catch {}
+      } catch (e) {
+        console.warn("Board load failed", e);
+      }
+    },
+    [excalidrawAPI],
+  );
+
+  // ── Misc ────────────────────────────────────────────────────────────────────
   const renderCustomStats = (
     elements: readonly NonDeletedExcalidrawElement[],
     appState: UIAppState,
-  ) => {
-    return (
-      <CustomStats
-        setToast={(message) => excalidrawAPI!.setToast({ message })}
-        appState={appState}
-        elements={elements}
-      />
-    );
-  };
+  ) => (
+    <CustomStats
+      setToast={(message) => excalidrawAPI!.setToast({ message })}
+      appState={appState}
+      elements={elements}
+    />
+  );
 
   const localStorageQuotaExceeded = useAtomValue(localStorageQuotaExceededAtom);
 
   const onExport: Required<ExcalidrawProps>["onExport"] = useCallback(
     async function* () {
       let snapshot = FileStatusStore.getSnapshot();
-      const { pending, total } = FileStatusStore.getPendingCount(
-        snapshot.value,
-      );
-      if (pending === 0) {
-        return;
-      }
+      const { pending, total } = FileStatusStore.getPendingCount(snapshot.value);
+      if (pending === 0) return;
 
-      yield {
-        type: "progress",
-        progress: (total - pending) / total,
-        message: `Loading images (${total - pending}/${total})...`,
-      };
+      yield { type: "progress", progress: (total - pending) / total, message: `Loading images (${total - pending}/${total})...` };
 
       while (true) {
         snapshot = await FileStatusStore.pull(snapshot.version);
-        const { pending: nowPending, total: nowTotal } =
-          FileStatusStore.getPendingCount(snapshot.value);
-
-        yield {
-          type: "progress",
-          progress: (nowTotal - nowPending) / nowTotal,
-          message: `Loading images (${nowTotal - nowPending}/${nowTotal})...`,
-        };
-
+        const { pending: nowPending, total: nowTotal } = FileStatusStore.getPendingCount(snapshot.value);
+        yield { type: "progress", progress: (nowTotal - nowPending) / nowTotal, message: `Loading images (${nowTotal - nowPending}/${nowTotal})...` };
         if (nowPending === 0) {
           await new Promise((r) => setTimeout(r, 500));
-          yield {
-            type: "progress",
-            message: `Preparing export...`,
-          };
+          yield { type: "progress", message: `Preparing export...` };
           return;
         }
       }
@@ -518,25 +552,14 @@ const ExcalidrawWrapper = () => {
 
   if (isSelfEmbedding) {
     return (
-      <div
-        style={{
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "center",
-          textAlign: "center",
-          height: "100%",
-        }}
-      >
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "center", textAlign: "center", height: "100%" }}>
         <h1>I'm not a pretzel!</h1>
       </div>
     );
   }
 
   return (
-    <div
-      style={{ height: "100%" }}
-      className={clsx("excalidraw-app")}
-    >
+    <div style={{ height: "100%" }} className={clsx("excalidraw-app")}>
       <Excalidraw
         onChange={onChange}
         onExport={onExport}
@@ -572,6 +595,13 @@ const ExcalidrawWrapper = () => {
         </OverwriteConfirmDialog>
         <AppFooter onChange={() => excalidrawAPI?.refresh()} />
 
+        <AppSidebar
+          excalidrawAPI={excalidrawAPI}
+          activeBoardId={activeBoardId}
+          onSwitch={handleBoardSwitch}
+          onSaveBeforeSwitch={handleSaveBeforeSwitch}
+        />
+
         <TTDDialogTrigger />
 
         {localStorageQuotaExceeded && (
@@ -595,11 +625,7 @@ const ExcalidrawWrapper = () => {
               predicate: true,
               keywords: ["issues", "bugs", "requests", "report"],
               perform: () => {
-                window.open(
-                  "https://github.com/nousvault/draw",
-                  "_blank",
-                  "noopener noreferrer",
-                );
+                window.open("https://github.com/nousvault/draw", "_blank", "noopener noreferrer");
               },
             },
             {
@@ -609,11 +635,7 @@ const ExcalidrawWrapper = () => {
               predicate: true,
               keywords: ["twitter", "contact", "social"],
               perform: () => {
-                window.open(
-                  "https://x.com/TofuuTalks",
-                  "_blank",
-                  "noopener noreferrer",
-                );
+                window.open("https://x.com/TofuuTalks", "_blank", "noopener noreferrer");
               },
             },
             {
@@ -623,9 +645,7 @@ const ExcalidrawWrapper = () => {
               perform: () => {
                 if (pwaEvent) {
                   pwaEvent.prompt();
-                  pwaEvent.userChoice.then(() => {
-                    pwaEvent = null;
-                  });
+                  pwaEvent.userChoice.then(() => { pwaEvent = null; });
                 }
               },
             },
