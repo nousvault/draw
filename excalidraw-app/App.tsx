@@ -166,7 +166,7 @@ const initializeScene = async (opts: {
         JSON.parse(opts.board.appState || "{}"),
         null,
       );
-      return { scene: { elements, appState } };
+      return { scene: { elements, appState: { ...appState, openSidebar: { name: "default", tab: "boards" } } } };
     } catch {
       return { scene: null };
     }
