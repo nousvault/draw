@@ -250,6 +250,20 @@ const ExcalidrawWrapper = () => {
   // Remember last active sidebar tab so close→reopen restores it
   const lastSidebarTabRef = useRef<string>("boards");
 
+  // Restore last active tab when sidebar reopens with no/wrong tab
+  useEffect(() => {
+    if (!excalidrawAPI) return;
+    const appState = excalidrawAPI.getAppState();
+    if (appState.openSidebar?.name === "default" && !appState.openSidebar?.tab) {
+      excalidrawAPI.updateScene({
+        appState: {
+          openSidebar: { name: "default", tab: lastSidebarTabRef.current },
+        },
+        captureUpdate: CaptureUpdateAction.NEVER,
+      });
+    }
+  });
+
   const initialStatePromiseRef = useRef<{
     promise: ResolvablePromise<ExcalidrawInitialDataState | null>;
   }>({ promise: null! });
@@ -423,21 +437,9 @@ const ExcalidrawWrapper = () => {
     appState: AppState,
     files: BinaryFiles,
   ) => {
-    // Track last active sidebar tab, and restore it when sidebar reopens
-    // (Excalidraw defaults to "library" tab when no tab is specified on open)
-    if (appState.openSidebar?.name === "default") {
-      const tab = appState.openSidebar.tab;
-      if (tab && tab !== lastSidebarTabRef.current) {
-        lastSidebarTabRef.current = tab;
-      } else if (!tab) {
-        // Sidebar opened without a tab — restore last known tab
-        excalidrawAPI?.updateScene({
-          appState: {
-            openSidebar: { name: "default", tab: lastSidebarTabRef.current },
-          },
-          captureUpdate: CaptureUpdateAction.NEVER,
-        });
-      }
+    // Track last active sidebar tab for restore on reopen
+    if (appState.openSidebar?.name === "default" && appState.openSidebar?.tab) {
+      lastSidebarTabRef.current = appState.openSidebar.tab;
     }
 
     // Always keep LocalData in sync (for tab sync / fallback)
