@@ -20,30 +20,35 @@ export const AppSidebar: React.FC<Props> = ({
   onSaveBeforeSwitch,
   lastSidebarTabRef,
 }) => {
-  const isRestoringRef = useRef(false);
+  // Track whether sidebar was closed so we know when it's a fresh open
+  const wasClosedRef = useRef(true);
 
   const handleStateChange = (
     state: { name: string; tab?: string } | null,
   ) => {
-    if (!state) return; // sidebar closed
+    if (!state) {
+      // Sidebar is closing — mark as closed
+      wasClosedRef.current = true;
+      return;
+    }
 
-    if (!state.tab) {
-      // Sidebar opened with no tab — restore last known tab
-      if (isRestoringRef.current) return;
-      isRestoringRef.current = true;
-      excalidrawAPI?.updateScene({
-        appState: {
-          openSidebar: { name: "default", tab: lastSidebarTabRef.current },
-        },
-        captureUpdate: CaptureUpdateAction.NEVER,
-      });
-      // Reset guard after next tick
-      setTimeout(() => {
-        isRestoringRef.current = false;
-      }, 0);
+    if (wasClosedRef.current) {
+      // Fresh open — restore last known tab if different from what it opened with
+      wasClosedRef.current = false;
+      const targetTab = lastSidebarTabRef.current;
+      if (state.tab !== targetTab) {
+        excalidrawAPI?.updateScene({
+          appState: {
+            openSidebar: { name: "default", tab: targetTab },
+          },
+          captureUpdate: CaptureUpdateAction.NEVER,
+        });
+      }
     } else {
       // User switched tab — remember it
-      lastSidebarTabRef.current = state.tab;
+      if (state.tab) {
+        lastSidebarTabRef.current = state.tab;
+      }
     }
   };
 
