@@ -1,6 +1,5 @@
 import {
   Excalidraw,
-  TTDDialogTrigger,
   CaptureUpdateAction,
   useEditorInterface,
   ExcalidrawAPIProvider,
@@ -587,8 +586,21 @@ const ExcalidrawWrapper = () => {
         <AppMainMenu
           theme={appTheme}
           refresh={() => forceRefresh((prev) => !prev)}
+          onOpenBoards={() => {
+            excalidrawAPI?.updateScene({
+              appState: { openSidebar: { name: "default", tab: "boards" } },
+              captureUpdate: CaptureUpdateAction.NEVER,
+            });
+          }}
         />
-        <AppWelcomeScreen />
+        <AppWelcomeScreen
+          onOpenBoards={() => {
+            excalidrawAPI?.updateScene({
+              appState: { openSidebar: { name: "default", tab: "boards" } },
+              captureUpdate: CaptureUpdateAction.NEVER,
+            });
+          }}
+        />
         <OverwriteConfirmDialog>
           <OverwriteConfirmDialog.Actions.ExportToImage />
           <OverwriteConfirmDialog.Actions.SaveToDisk />
@@ -601,8 +613,6 @@ const ExcalidrawWrapper = () => {
           onSwitch={handleBoardSwitch}
           onSaveBeforeSwitch={handleSaveBeforeSwitch}
         />
-
-        <TTDDialogTrigger />
 
         {localStorageQuotaExceeded && (
           <div className="alert alert--danger">

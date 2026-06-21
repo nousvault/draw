@@ -13,9 +13,21 @@ import { eyeIcon } from "@excalidraw/excalidraw/components/icons";
 export const AppMainMenu: React.FC<{
   theme: Theme | "system";
   refresh: () => void;
+  onOpenBoards: () => void;
 }> = React.memo((props) => {
   return (
     <MainMenu>
+      <MainMenu.Item
+        icon={
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+            <path d="M1.5 4C1.5 3.17 2.17 2.5 3 2.5H6L7.5 4H13C13.83 4 14.5 4.67 14.5 5.5V12C14.5 12.83 13.83 13.5 13 13.5H3C2.17 13.5 1.5 12.83 1.5 12V4Z" stroke="currentColor" strokeWidth="1.3"/>
+          </svg>
+        }
+        onSelect={props.onOpenBoards}
+      >
+        My Boards
+      </MainMenu.Item>
+      <MainMenu.Separator />
       <MainMenu.DefaultItems.LoadScene />
       <MainMenu.DefaultItems.SaveToActiveFile />
       <MainMenu.DefaultItems.Export />
