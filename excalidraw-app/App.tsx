@@ -250,20 +250,6 @@ const ExcalidrawWrapper = () => {
   // Remember last active sidebar tab so close→reopen restores it
   const lastSidebarTabRef = useRef<string>("boards");
 
-  // Restore last active tab when sidebar reopens with no/wrong tab
-  useEffect(() => {
-    if (!excalidrawAPI) return;
-    const appState = excalidrawAPI.getAppState();
-    if (appState.openSidebar?.name === "default" && !appState.openSidebar?.tab) {
-      excalidrawAPI.updateScene({
-        appState: {
-          openSidebar: { name: "default", tab: lastSidebarTabRef.current },
-        },
-        captureUpdate: CaptureUpdateAction.NEVER,
-      });
-    }
-  });
-
   const initialStatePromiseRef = useRef<{
     promise: ResolvablePromise<ExcalidrawInitialDataState | null>;
   }>({ promise: null! });
@@ -634,6 +620,7 @@ const ExcalidrawWrapper = () => {
           activeBoardId={activeBoardId}
           onSwitch={handleBoardSwitch}
           onSaveBeforeSwitch={handleSaveBeforeSwitch}
+          lastSidebarTabRef={lastSidebarTabRef}
         />
 
         {localStorageQuotaExceeded && (

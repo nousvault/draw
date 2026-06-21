@@ -1,23 +1,54 @@
-import React from "react";
+import React, { useRef } from "react";
 import { DefaultSidebar, Sidebar } from "@excalidraw/excalidraw";
 import type { ExcalidrawImperativeAPI } from "@excalidraw/excalidraw/types";
 import type { Board } from "../data/BoardStorage";
 import { BoardsSidebar } from "./BoardsSidebar";
+import { CaptureUpdateAction } from "@excalidraw/excalidraw";
 
 interface Props {
   excalidrawAPI: ExcalidrawImperativeAPI | null;
   activeBoardId: string | null;
   onSwitch: (board: Board) => void;
   onSaveBeforeSwitch: () => Promise<void>;
+  lastSidebarTabRef: React.MutableRefObject<string>;
 }
 
 export const AppSidebar: React.FC<Props> = ({
+  excalidrawAPI,
   activeBoardId,
   onSwitch,
   onSaveBeforeSwitch,
+  lastSidebarTabRef,
 }) => {
+  const isRestoringRef = useRef(false);
+
+  const handleStateChange = (
+    state: { name: string; tab?: string } | null,
+  ) => {
+    if (!state) return; // sidebar closed
+
+    if (!state.tab) {
+      // Sidebar opened with no tab — restore last known tab
+      if (isRestoringRef.current) return;
+      isRestoringRef.current = true;
+      excalidrawAPI?.updateScene({
+        appState: {
+          openSidebar: { name: "default", tab: lastSidebarTabRef.current },
+        },
+        captureUpdate: CaptureUpdateAction.NEVER,
+      });
+      // Reset guard after next tick
+      setTimeout(() => {
+        isRestoringRef.current = false;
+      }, 0);
+    } else {
+      // User switched tab — remember it
+      lastSidebarTabRef.current = state.tab;
+    }
+  };
+
   return (
-    <DefaultSidebar>
+    <DefaultSidebar onStateChange={handleStateChange}>
       <DefaultSidebar.TabTriggers>
         <Sidebar.TabTrigger tab="boards" title="Boards">
           {/* Folder icon */}
